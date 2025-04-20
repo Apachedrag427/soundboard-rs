@@ -1,0 +1,12 @@
+[package]
+name = "soundboard-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.31.1"
+env_logger = { version = "0.10", default-features = false, features = [
+    "auto-color",
+    "humantime",
+] }
+kira = "0.10.5"
