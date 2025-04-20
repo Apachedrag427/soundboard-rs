@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use eframe::egui;
+use kira::clock::ClockSpeed;
 use kira::sound::static_sound::StaticSoundHandle;
 use kira::Tween;
 use kira::{
@@ -16,7 +17,8 @@ use std::time::Duration;
 enum AudioAction {
 	Play {
 		file: String,
-		reversed: bool
+		reversed: bool,
+		delay: f64,
 	},
 	Stop {
 		file: String
@@ -47,11 +49,20 @@ fn main() -> eframe::Result {
 		let mut active: HashMap<String, Vec<StaticSoundHandle>> = HashMap::new();
 		let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()).unwrap();
 
+		let mut clock_handle = manager.add_clock(ClockSpeed::TicksPerSecond(10.0)).unwrap();
+		clock_handle.start();
+
 		loop {
 			let action: AudioAction = rx.recv().unwrap();
 			match action {
-				AudioAction::Play { file, reversed} => {
+				AudioAction::Play { file, reversed, delay } => {
 					if let Some(sound) = cache.get(&file) {
+						let sound = if delay == 0.0 {
+							sound.clone()
+						} else {
+							sound.start_time(clock_handle.time() + delay*10.0)
+						};
+
 						let handle = if reversed {
 							manager.play(sound.reverse(true)).unwrap()
 						} else {
@@ -64,19 +75,25 @@ fn main() -> eframe::Result {
 						active.get_mut(&file).unwrap().push(handle);
 					} else {
 						let path = String::from("Audios/") + &file;
-						let sound_data = StaticSoundData::from_file(path).unwrap();
+						let sound = StaticSoundData::from_file(path).unwrap();
+
+						let sound = if delay == 0.0 {
+							sound.clone()
+						} else {
+							sound.start_time(clock_handle.time() + delay*10.0)
+						};
 
 						let handle = if reversed {
-							manager.play(sound_data.reverse(true)).unwrap()
+							manager.play(sound.reverse(true)).unwrap()
 						} else {
-							manager.play(sound_data.clone()).unwrap()
+							manager.play(sound.clone()).unwrap()
 						};
 						
 						if !active.contains_key(&file) {
 							active.insert(file.clone(), vec![]);
 						}
 						active.get_mut(&file).unwrap().push(handle);
-						cache.insert(file, sound_data);
+						cache.insert(file, sound);
 					}
 				}
 
@@ -119,7 +136,9 @@ fn main() -> eframe::Result {
 
 struct Soundboard {
 	transmitter: mpsc::Sender<AudioAction>,
-	audio_files: Vec<String>
+	audio_files: Vec<String>,
+	add_delay: bool,
+	delay: f64
 }
 
 impl eframe::App for Soundboard {
@@ -127,6 +146,10 @@ impl eframe::App for Soundboard {
 		let window_dimensions = ctx.input(|i| i.viewport().outer_rect).unwrap();
 		egui::CentralPanel::default().show(ctx, |ui| {
 			ui.heading("Soundboard");
+			ui.checkbox(&mut self.add_delay, "Delay");
+			if self.add_delay {
+				ui.add(egui::Slider::new(&mut self.delay, 0.0..=10.0).text("Delay Length (seconds)"));
+			}
 			if ui.button("Stop All").clicked() {
 				self.transmitter.send(AudioAction::StopAll).unwrap();
 			}
@@ -145,10 +168,10 @@ impl eframe::App for Soundboard {
 							for file in &self.audio_files {
 								ui.label(file);
 								if ui.button(egui_material_icons::icons::ICON_PLAY_ARROW).clicked() {
-									self.transmitter.send(AudioAction::Play { file: file.to_owned(), reversed: false}).unwrap();
+									self.transmitter.send(AudioAction::Play { file: file.to_owned(), reversed: false, delay: if self.add_delay { self.delay } else { 0.0 } }).unwrap();
 								}
 								if ui.button(egui_material_icons::icons::ICON_FAST_REWIND).clicked() {
-									self.transmitter.send(AudioAction::Play { file: file.to_owned(), reversed: true}).unwrap();
+									self.transmitter.send(AudioAction::Play { file: file.to_owned(), reversed: true, delay: if self.add_delay { self.delay } else { 0.0 } }).unwrap();
 								}
 								if ui.button(egui_material_icons::icons::ICON_STOP).clicked() {
 									self.transmitter.send(AudioAction::Stop { file: file.to_owned() }).unwrap();
@@ -164,6 +187,6 @@ impl eframe::App for Soundboard {
 
 impl Soundboard {
 	fn new(transmitter: mpsc::Sender<AudioAction>, audio_files: Vec<String>) -> Box<Self> {
-		Box::new(Self { transmitter, audio_files })
+		Box::new(Self { transmitter, audio_files, add_delay: false, delay: 0.0 })
 	}
 }
