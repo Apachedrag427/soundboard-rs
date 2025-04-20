@@ -143,7 +143,12 @@ struct Soundboard {
 
 impl eframe::App for Soundboard {
 	fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-		let window_dimensions = ctx.input(|i| i.viewport().outer_rect).unwrap();
+		let window_dimensions = ctx.input(|i| i.viewport().outer_rect);
+		if let None = window_dimensions {
+			return;
+		};
+		let window_dimensions = window_dimensions.unwrap();
+
 		egui::CentralPanel::default().show(ctx, |ui| {
 			ui.heading("Soundboard");
 			ui.checkbox(&mut self.add_delay, "Delay");
