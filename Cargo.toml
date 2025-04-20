@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.31.1"
+egui_material_icons = "0.3.0"
 env_logger = { version = "0.10", default-features = false, features = [
     "auto-color",
     "humantime",

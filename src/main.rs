@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use eframe::egui;
+use kira::sound::static_sound::StaticSoundHandle;
+use kira::Tween;
 use kira::{
 	AudioManager, AudioManagerSettings, DefaultBackend,
 	sound::static_sound::StaticSoundData
@@ -9,9 +11,17 @@ use std::collections::HashMap;
 use std::thread;
 use std::sync::mpsc;
 use std::fs;
+use std::time::Duration;
 
 enum AudioAction {
-	Play(String),
+	Play {
+		file: String,
+		reversed: bool
+	},
+	Stop {
+		file: String
+	},
+	StopAll
 }
 
 fn main() -> eframe::Result {
@@ -34,20 +44,64 @@ fn main() -> eframe::Result {
 	let (tx, rx) = mpsc::channel();
 	thread::spawn(move || {
 		let mut cache: HashMap<String, StaticSoundData> = HashMap::new();
+		let mut active: HashMap<String, Vec<StaticSoundHandle>> = HashMap::new();
 		let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()).unwrap();
 
 		loop {
 			let action: AudioAction = rx.recv().unwrap();
 			match action {
-				AudioAction::Play(name) => {
-					if let Some(sound) = cache.get(&name) {
-						manager.play(sound.clone()).unwrap();
+				AudioAction::Play { file, reversed} => {
+					if let Some(sound) = cache.get(&file) {
+						let handle = if reversed {
+							manager.play(sound.reverse(true)).unwrap()
+						} else {
+							manager.play(sound.clone()).unwrap()
+						};
+
+						if !active.contains_key(&file) {
+							active.insert(file.clone(), vec![]);
+						}
+						active.get_mut(&file).unwrap().push(handle);
 					} else {
-						let path = String::from("Audios/") + &name;
+						let path = String::from("Audios/") + &file;
 						let sound_data = StaticSoundData::from_file(path).unwrap();
-						manager.play(sound_data.clone()).unwrap();
-						cache.insert(name, sound_data);
+
+						let handle = if reversed {
+							manager.play(sound_data.reverse(true)).unwrap()
+						} else {
+							manager.play(sound_data.clone()).unwrap()
+						};
+						
+						if !active.contains_key(&file) {
+							active.insert(file.clone(), vec![]);
+						}
+						active.get_mut(&file).unwrap().push(handle);
+						cache.insert(file, sound_data);
 					}
+				}
+
+				AudioAction::Stop { file } => {
+					if let Some(handle_list) = active.get_mut(&file) {
+						for handle in handle_list {
+							handle.stop(Tween {
+								duration: Duration::from_secs(0),
+								..Default::default()
+							});
+						}
+						active.insert(file, vec![]);
+					}
+				}
+
+				AudioAction::StopAll => {
+					for (_file, handle_list) in &mut active {
+						for handle in handle_list {
+							handle.stop(Tween {
+								duration: Duration::from_secs(0),
+								..Default::default()
+							});
+						}
+					}
+					active.clear();
 				}
 			}
 			
@@ -56,7 +110,8 @@ fn main() -> eframe::Result {
 	eframe::run_native(
 		"soundboard-rs",
 		options,
-		Box::new(|_cc| {
+		Box::new(|cc| {
+			egui_material_icons::initialize(&cc.egui_ctx);
 			Ok(Soundboard::new(tx, audio_files))
 		}),
 	)
@@ -67,23 +122,48 @@ struct Soundboard {
 	audio_files: Vec<String>
 }
 
-impl Soundboard {
-	fn new(transmitter: mpsc::Sender<AudioAction>, audio_files: Vec<String>) -> Box<Self> {
-		Box::new(Self { transmitter, audio_files })
+impl eframe::App for Soundboard {
+	fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+		let window_dimensions = ctx.input(|i| i.viewport().outer_rect).unwrap();
+		egui::CentralPanel::default().show(ctx, |ui| {
+			ui.heading("Soundboard");
+			if ui.button("Stop All").clicked() {
+				self.transmitter.send(AudioAction::StopAll).unwrap();
+			}
+			egui::ScrollArea::vertical().show(ui, |ui| {
+				ui.set_min_width(window_dimensions.width());
+				ui.set_max_width(window_dimensions.width());
+
+				let ui_builder = egui::UiBuilder::new();
+
+				ui.scope_builder(ui_builder, |ui| {
+					egui::Grid::new("sounds")
+						.num_columns(4)
+						.spacing([4.0, 4.0])
+						.striped(true)
+						.show(ui, |ui| {
+							for file in &self.audio_files {
+								ui.label(file);
+								if ui.button(egui_material_icons::icons::ICON_PLAY_ARROW).clicked() {
+									self.transmitter.send(AudioAction::Play { file: file.to_owned(), reversed: false}).unwrap();
+								}
+								if ui.button(egui_material_icons::icons::ICON_FAST_REWIND).clicked() {
+									self.transmitter.send(AudioAction::Play { file: file.to_owned(), reversed: true}).unwrap();
+								}
+								if ui.button(egui_material_icons::icons::ICON_STOP).clicked() {
+									self.transmitter.send(AudioAction::Stop { file: file.to_owned() }).unwrap();
+								}
+								ui.end_row();
+							}
+						});
+				});
+			});
+		});
 	}
 }
 
-impl eframe::App for Soundboard {
-	fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-		egui::CentralPanel::default().show(ctx, |ui| {
-			ui.heading("Soundboard");
-			egui::ScrollArea::vertical().show(ui, |ui| {
-				for file in &self.audio_files {
-					if ui.button(file).clicked() {
-						self.transmitter.send(AudioAction::Play(file.to_owned())).unwrap();
-					}
-				}
-			});
-		});
+impl Soundboard {
+	fn new(transmitter: mpsc::Sender<AudioAction>, audio_files: Vec<String>) -> Box<Self> {
+		Box::new(Self { transmitter, audio_files })
 	}
 }
